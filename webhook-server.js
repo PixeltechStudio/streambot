@@ -19,9 +19,10 @@ const CONFIG = {
   BL_APP_ID:  process.env.BL_APP_ID  || '',
   BL_API_KEY: process.env.BL_API_KEY || '',
   // Z-API
-  ZAPI_INSTANCE: process.env.ZAPI_INSTANCE || '',
-  ZAPI_TOKEN:    process.env.ZAPI_TOKEN    || '',
-  ZAPI_URL:      process.env.ZAPI_URL      || 'https://api.z-api.io',
+  ZAPI_INSTANCE:     process.env.ZAPI_INSTANCE     || '',
+  ZAPI_TOKEN:        process.env.ZAPI_TOKEN        || '',
+  ZAPI_CLIENT_TOKEN: process.env.ZAPI_CLIENT_TOKEN || '', // Security Token da conta (Account > Security Token)
+  ZAPI_URL:          process.env.ZAPI_URL          || 'https://api.z-api.io',
   API_TYPE:      process.env.API_TYPE      || 'zapi', // 'zapi' ou 'evolution'
   PORT:          process.env.PORT          || 3000,
   // Rate limiting simples (em memória)
@@ -31,7 +32,7 @@ const CONFIG = {
 
 // Valida configurações obrigatórias na inicialização
 (function validateConfig() {
-  const required = ['BL_APP_ID', 'BL_API_KEY', 'ZAPI_INSTANCE', 'ZAPI_TOKEN'];
+  const required = ['BL_APP_ID', 'BL_API_KEY', 'ZAPI_INSTANCE', 'ZAPI_TOKEN', 'ZAPI_CLIENT_TOKEN'];
   const missing = required.filter(k => !CONFIG[k]);
   if (missing.length) {
     console.warn(`⚠️  Variáveis de ambiente não configuradas: ${missing.join(', ')}`);
@@ -151,6 +152,7 @@ async function sendMessage(phone, message) {
   console.log(`[DEBUG] sendMessage → phone: ${fullNum}, API_TYPE: ${CONFIG.API_TYPE}`);
   console.log(`[DEBUG] ZAPI_INSTANCE: ${CONFIG.ZAPI_INSTANCE ? '✅ configurado' : '❌ VAZIO'}`);
   console.log(`[DEBUG] ZAPI_TOKEN: ${CONFIG.ZAPI_TOKEN ? '✅ configurado' : '❌ VAZIO'}`);
+  console.log(`[DEBUG] ZAPI_CLIENT_TOKEN: ${CONFIG.ZAPI_CLIENT_TOKEN ? '✅ configurado' : '❌ VAZIO — ESTE É O PROBLEMA!'}`);
   console.log(`[DEBUG] ZAPI_URL: ${CONFIG.ZAPI_URL}`);
 
   if (CONFIG.API_TYPE === 'evolution') {
@@ -168,11 +170,15 @@ async function sendMessage(phone, message) {
     }
     return res.json();
   } else {
+    // Z-API requer o Client-Token (Security Token da conta) no header
     const res = await fetch(
       `${CONFIG.ZAPI_URL}/instances/${CONFIG.ZAPI_INSTANCE}/token/${CONFIG.ZAPI_TOKEN}/send-text`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Client-Token': CONFIG.ZAPI_CLIENT_TOKEN,
+        },
         body: JSON.stringify({ phone: fullNum, message }),
       }
     );
@@ -180,7 +186,9 @@ async function sendMessage(phone, message) {
       const err = await res.text().catch(() => '');
       throw new Error(`Z-API error [${res.status}]: ${err}`);
     }
-    return res.json();
+    const result = await res.json();
+    console.log(`[DEBUG] Z-API response:`, JSON.stringify(result));
+    return result;
   }
 }
 
