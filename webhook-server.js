@@ -148,6 +148,11 @@ async function sendMessage(phone, message) {
   const num = sanitizePhone(phone);
   const fullNum = num.startsWith('55') ? num : '55' + num;
 
+  console.log(`[DEBUG] sendMessage → phone: ${fullNum}, API_TYPE: ${CONFIG.API_TYPE}`);
+  console.log(`[DEBUG] ZAPI_INSTANCE: ${CONFIG.ZAPI_INSTANCE ? '✅ configurado' : '❌ VAZIO'}`);
+  console.log(`[DEBUG] ZAPI_TOKEN: ${CONFIG.ZAPI_TOKEN ? '✅ configurado' : '❌ VAZIO'}`);
+  console.log(`[DEBUG] ZAPI_URL: ${CONFIG.ZAPI_URL}`);
+
   if (CONFIG.API_TYPE === 'evolution') {
     const res = await fetch(
       `${CONFIG.ZAPI_URL}/message/sendText/${CONFIG.ZAPI_INSTANCE}`,
@@ -485,26 +490,43 @@ app.post('/webhook/:companyId', async (req, res) => {
     const body = req.body;
     let phone, text, senderName, isFromMe;
 
-    if (body.type === 'ReceivedCallback' || body.phone) {
+    // Log completo do payload para debug (remova em produção após confirmar funcionamento)
+    console.log(`[DEBUG] Payload recebido:`, JSON.stringify(body).substring(0, 500));
+
+    if (body.type === 'ReceivedCallback' || body.phone || body.from) {
       // Formato Z-API
       isFromMe   = body.fromMe || false;
-      phone      = body.phone || body.from || '';
-      text       = body.text?.message || body.message || '';
-      senderName = body.senderName || body.pushName || 'Cliente';
+      phone      = (body.phone || body.from || '').replace('@c.us', '').replace('@s.whatsapp.net', '');
+      // Z-API pode enviar o texto em diferentes campos dependendo da versão
+      text       = body.text?.message || body.body || body.message || body.caption || '';
+      senderName = body.senderName || body.pushName || body.notifyName || 'Cliente';
     } else if (body.data?.key || body.event) {
       // Formato Evolution API
       isFromMe   = body.data?.key?.fromMe || false;
-      phone      = body.data?.key?.remoteJid?.replace('@s.whatsapp.net', '') || '';
-      text       = body.data?.message?.conversation || body.data?.message?.extendedTextMessage?.text || '';
+      phone      = body.data?.key?.remoteJid?.replace('@s.whatsapp.net', '').replace('@c.us', '') || '';
+      text       = body.data?.message?.conversation
+                || body.data?.message?.extendedTextMessage?.text
+                || body.data?.message?.imageMessage?.caption
+                || '';
       senderName = body.data?.pushName || 'Cliente';
     } else {
+      console.log(`[DEBUG] Payload não reconhecido, ignorando. Keys recebidas: ${Object.keys(body).join(', ')}`);
       return;
     }
 
     // Ignora mensagens enviadas pelo bot, grupos e sem texto
-    if (isFromMe) return;
-    if (phone.includes('@g.us') || phone.includes('-')) return;
-    if (!text || !text.trim()) return;
+    if (isFromMe) {
+      console.log(`[DEBUG] Ignorando mensagem própria (fromMe=true)`);
+      return;
+    }
+    if (phone.includes('@g.us') || phone.includes('-')) {
+      console.log(`[DEBUG] Ignorando grupo: ${phone}`);
+      return;
+    }
+    if (!text || !text.trim()) {
+      console.log(`[DEBUG] Texto vazio, ignorando. Body keys: ${Object.keys(req.body).join(', ')}`);
+      return;
+    }
 
     // Rate limiting
     if (isRateLimited(phone)) {
@@ -519,6 +541,8 @@ app.post('/webhook/:companyId', async (req, res) => {
     if (response) {
       await sendMessage(phone, response);
       console.log(`[${companyId}] Resposta enviada para ${sanitizePhone(phone)}`);
+    } else {
+      console.log(`[${companyId}] Nenhuma resposta gerada (atendimento humano ou null)`);
     }
   } catch (err) {
     console.error('Erro no webhook:', err.message);
