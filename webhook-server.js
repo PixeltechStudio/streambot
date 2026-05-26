@@ -145,10 +145,19 @@ async function blUpdate(table, id, data) {
 }
 
 // ==================== ZAPI / EVOLUTION HELPERS ====================
-async function sendMessage(phone, message) {
-  const num = sanitizePhone(phone);
-  const fullNum = num.startsWith('55') ? num : '55' + num;
+// ==================== CONFIGURAÇÃO DE RETRY ====================
+const SEND_RETRY_ATTEMPTS = parseInt(process.env.SEND_RETRY_ATTEMPTS || '3');
+const SEND_RETRY_DELAY_MS = parseInt(process.env.SEND_RETRY_DELAY_MS || '2000');
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Tenta enviar uma mensagem com retry automático.
+ * Lança erro após esgotar todas as tentativas.
+ */
+async function sendMessageAttempt(fullNum, message) {
   console.log(`[DEBUG] sendMessage → phone: ${fullNum}, API_TYPE: ${CONFIG.API_TYPE}`);
   console.log(`[DEBUG] ZAPI_INSTANCE: ${CONFIG.ZAPI_INSTANCE ? '✅ configurado' : '❌ VAZIO'}`);
   console.log(`[DEBUG] ZAPI_TOKEN: ${CONFIG.ZAPI_TOKEN ? '✅ configurado' : '❌ VAZIO'}`);
@@ -189,6 +198,65 @@ async function sendMessage(phone, message) {
     const result = await res.json();
     console.log(`[DEBUG] Z-API response:`, JSON.stringify(result));
     return result;
+  }
+}
+
+/**
+ * Envia mensagem com retry automático.
+ * Se todas as tentativas falharem, tenta enviar uma mensagem de erro ao cliente.
+ */
+async function sendMessage(phone, message) {
+  const num = sanitizePhone(phone);
+  const fullNum = num.startsWith('55') ? num : '55' + num;
+
+  let lastError;
+
+  for (let attempt = 1; attempt <= SEND_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const result = await sendMessageAttempt(fullNum, message);
+      if (attempt > 1) {
+        console.log(`[RETRY] Mensagem enviada com sucesso na tentativa ${attempt} para ${fullNum}`);
+      }
+      return result;
+    } catch (err) {
+      lastError = err;
+      console.error(`[RETRY] Tentativa ${attempt}/${SEND_RETRY_ATTEMPTS} falhou para ${fullNum}: ${err.message}`);
+
+      if (attempt < SEND_RETRY_ATTEMPTS) {
+        console.log(`[RETRY] Aguardando ${SEND_RETRY_DELAY_MS}ms antes da próxima tentativa...`);
+        await sleep(SEND_RETRY_DELAY_MS);
+      }
+    }
+  }
+
+  // Todas as tentativas falharam — tenta notificar o cliente
+  console.error(`[ERRO] Todas as ${SEND_RETRY_ATTEMPTS} tentativas falharam para ${fullNum}. Erro: ${lastError.message}`);
+  await sendErrorNotification(fullNum, lastError);
+
+  throw lastError;
+}
+
+/**
+ * Tenta enviar uma mensagem de erro genérica ao cliente após falha de envio.
+ * Usa um texto simplificado para maximizar a chance de entrega.
+ * Não lança erro para não criar loop infinito.
+ */
+async function sendErrorNotification(fullNum, originalError) {
+  const errorMsg =
+    `⚠️ *Ops! Tivemos um problema técnico.*\n\n` +
+    `Não conseguimos processar sua solicitação agora. Por favor, tente novamente em alguns instantes.\n\n` +
+    `Se o problema persistir, entre em contato diretamente com nossa equipe. 🙏`;
+
+  console.log(`[ERRO] Tentando enviar notificação de erro para ${fullNum}...`);
+
+  try {
+    await sendMessageAttempt(fullNum, errorMsg);
+    console.log(`[ERRO] Notificação de erro enviada com sucesso para ${fullNum}`);
+  } catch (notifyErr) {
+    // Falhou também a notificação — loga e desiste sem estourar exceção
+    console.error(`[ERRO CRÍTICO] Falha ao enviar notificação de erro para ${fullNum}: ${notifyErr.message}`);
+    console.error(`[ERRO CRÍTICO] Erro original: ${originalError.message}`);
+    console.error(`[ERRO CRÍTICO] Verifique: ZAPI_CLIENT_TOKEN, status da instância e conectividade com ${CONFIG.ZAPI_URL}`);
   }
 }
 
@@ -547,8 +615,14 @@ app.post('/webhook/:companyId', async (req, res) => {
     const response = await processMessage(companyId, phone, text, senderName);
 
     if (response) {
-      await sendMessage(phone, response);
-      console.log(`[${companyId}] Resposta enviada para ${sanitizePhone(phone)}`);
+      try {
+        await sendMessage(phone, response);
+        console.log(`[${companyId}] Resposta enviada para ${sanitizePhone(phone)}`);
+      } catch (sendErr) {
+        // sendMessage já tentou retry e notificação de erro ao cliente
+        // Aqui apenas registra o erro final para monitoramento
+        console.error(`[${companyId}] FALHA DEFINITIVA ao enviar para ${sanitizePhone(phone)}: ${sendErr.message}`);
+      }
     } else {
       console.log(`[${companyId}] Nenhuma resposta gerada (atendimento humano ou null)`);
     }
