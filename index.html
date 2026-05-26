@@ -523,6 +523,9 @@ textarea.form-input{resize:vertical;min-height:80px}
       </div>
     </div>
 
+    <!-- BANNER Z-API CONFIG ALERT -->
+    <div id="zapiBanner" style="display:none;align-items:center;gap:10px;background:#fef2f2;border-bottom:1px solid #fca5a5;padding:10px 24px;font-size:13px;color:#dc2626;line-height:1.5"></div>
+
     <div class="page-content" id="pageContent">
       <!-- SECTIONS WILL BE RENDERED HERE -->
     </div>
@@ -819,11 +822,103 @@ const BL_URL = `https://api.backendless.com/${APP_ID}/${API_KEY}`;
 // ==================== Z-API CONFIG ====================
 // Configure sua Z-API ou Evolution API aqui (salvo no ConfigChatbot)
 let zapiConfig = {
-  instanceId: '',   // ex: 3A123ABC
-  token: '',        // ex: seu-token-zapi
+  instanceId: '',    // ex: 3A123ABC
+  token: '',         // ex: seu-token-zapi
+  clientToken: '',   // Security Token da conta Z-API (obrigatório!)
   url: 'https://api.z-api.io', // ou URL da sua Evolution API
-  type: 'zapi'     // 'zapi' ou 'evolution'
+  type: 'zapi'       // 'zapi' ou 'evolution'
 };
+
+// ==================== DIAGNÓSTICO Z-API ====================
+function getZapiDiagnostic() {
+  const issues = [];
+  if (!zapiConfig.instanceId) issues.push({ level: 'error', msg: 'Instance ID não configurado' });
+  if (!zapiConfig.token) issues.push({ level: 'error', msg: 'Token da instância não configurado' });
+  if (zapiConfig.type === 'zapi' && !zapiConfig.clientToken) {
+    issues.push({ level: 'error', msg: 'Client Token (Security Token) não configurado — envio retornará erro 401' });
+  }
+  return issues;
+}
+
+function updateZapiBanner() {
+  const banner = document.getElementById('zapiBanner');
+  if (!banner) return;
+  const issues = getZapiDiagnostic();
+  if (issues.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+  banner.style.display = 'flex';
+  banner.innerHTML = `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" style="flex-shrink:0;color:#dc2626"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <div style="flex:1">
+      <strong>Z-API não configurada corretamente:</strong>
+      ${issues.map(i => `<br>• ${i.msg}`).join('')}
+    </div>
+    <button onclick="openZapiConfigModal()" style="background:#dc2626;color:white;border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0">
+      Configurar agora
+    </button>
+  `;
+}
+
+async function runZapiFullDiagnostic() {
+  const out = document.getElementById('zapiDiagnosticOutput');
+  if (!out) return;
+  out.style.display = 'block';
+  out.innerHTML = '<div style="color:var(--gray-dark)">⏳ Verificando configurações...</div>';
+
+  const lines = [];
+
+  // 1. Variáveis locais
+  lines.push(`<strong>📋 Configuração salva:</strong>`);
+  lines.push(`• Instance ID: ${zapiConfig.instanceId ? `<span style="color:#15803d">✅ ${zapiConfig.instanceId}</span>` : '<span style="color:#dc2626">❌ Vazio</span>'}`);
+  lines.push(`• Token: ${zapiConfig.token ? `<span style="color:#15803d">✅ ${zapiConfig.token.substring(0,8)}…</span>` : '<span style="color:#dc2626">❌ Vazio</span>'}`);
+  lines.push(`• Client Token: ${zapiConfig.clientToken ? `<span style="color:#15803d">✅ ${zapiConfig.clientToken.substring(0,8)}…</span>` : '<span style="color:#dc2626">❌ Vazio — este é o problema!</span>'}`);
+  lines.push(`• URL: ${zapiConfig.url || 'https://api.z-api.io'}`);
+  lines.push(`• Tipo: ${zapiConfig.type}`);
+  lines.push('');
+
+  // 2. Testa status da instância
+  if (zapiConfig.instanceId && zapiConfig.token) {
+    lines.push(`<strong>🌐 Testando conexão com Z-API...</strong>`);
+    out.innerHTML = lines.join('<br>');
+    try {
+      const statusUrl = zapiConfig.type === 'evolution'
+        ? `${zapiConfig.url}/instance/fetchInstances`
+        : `${zapiConfig.url}/instances/${zapiConfig.instanceId}/token/${zapiConfig.token}/status`;
+      const headers = {};
+      if (zapiConfig.type === 'evolution') headers['apikey'] = zapiConfig.token;
+      if (zapiConfig.type === 'zapi' && zapiConfig.clientToken) headers['Client-Token'] = zapiConfig.clientToken;
+
+      const res = await fetch(statusUrl, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        const connected = zapiConfig.type === 'evolution'
+          ? (Array.isArray(data) ? data.some(i => i.connectionStatus === 'open') : data?.instance?.state === 'open')
+          : (data?.connected === true || data?.status === 'Connected' || data?.smartphoneConnected === true);
+        lines.push(`• Status HTTP: <span style="color:#15803d">✅ ${res.status} OK</span>`);
+        lines.push(`• WhatsApp: ${connected ? '<span style="color:#15803d">✅ Conectado</span>' : '<span style="color:#f59e0b">⚠️ Não conectado — escaneie o QR Code</span>'}`);
+      } else {
+        const body = await res.text().catch(() => '');
+        lines.push(`• Status HTTP: <span style="color:#dc2626">❌ ${res.status}</span>`);
+        if (res.status === 401 || res.status === 403) lines.push(`• <span style="color:#dc2626">Client Token inválido ou ausente!</span>`);
+        if (res.status === 404) lines.push(`• <span style="color:#dc2626">Instance ID não encontrado na Z-API</span>`);
+        lines.push(`• Resposta: <code style="font-size:11px">${body.substring(0,200)}</code>`);
+      }
+    } catch(e) {
+      lines.push(`• <span style="color:#dc2626">❌ Erro de rede: ${e.message}</span>`);
+      lines.push(`• Verifique se o CORS está habilitado ou tente via webhook-server.js`);
+    }
+  } else {
+    lines.push(`<strong style="color:#dc2626">❌ Impossível testar: Instance ID ou Token estão vazios</strong>`);
+  }
+
+  lines.push('');
+  lines.push(`<strong>💡 Dica:</strong> Seu Client Token (Security Token) é encontrado em:`);
+  lines.push(`Z-API → Menu da conta → Security Token`);
+
+  out.innerHTML = lines.join('<br>');
+}
 
 // ==================== STATE ====================
 let currentUser = null;
@@ -2376,6 +2471,13 @@ async function renderChatbot() {
         <div style="margin-top:14px;padding:12px;background:var(--gray-bg);border-radius:8px;font-size:12px;color:var(--gray-dark)">
           💡 <strong>Para o chatbot responder automaticamente</strong>, você precisa de um servidor rodando o arquivo <code>webhook-server.js</code> e configurar a URL do webhook na Z-API. Clique em "Ver Instruções do Webhook" acima.
         </div>
+        <div style="margin-top:14px">
+          <button class="btn btn-secondary btn-sm" onclick="runZapiFullDiagnostic()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Executar Diagnóstico Z-API
+          </button>
+          <div id="zapiDiagnosticOutput" style="display:none;margin-top:10px;padding:12px;background:#f9fafb;border:1px solid var(--gray-light);border-radius:8px;font-size:12px;line-height:1.8;color:var(--text)"></div>
+        </div>
       </div>
     </div>
     `;
@@ -3101,24 +3203,36 @@ async function loadZapiConfig() {
     const list = cfgs?.data || cfgs || [];
     const cfg = list[0];
     if (cfg && cfg.zapiInstanceId) {
-      zapiConfig.instanceId = cfg.zapiInstanceId || '';
-      zapiConfig.token = cfg.zapiToken || '';
-      zapiConfig.url = cfg.zapiUrl || 'https://api.z-api.io';
-      zapiConfig.type = cfg.zapiType || 'zapi';
+      zapiConfig.instanceId   = cfg.zapiInstanceId   || '';
+      zapiConfig.token        = cfg.zapiToken        || '';
+      zapiConfig.clientToken  = cfg.zapiClientToken  || '';
+      zapiConfig.url          = cfg.zapiUrl          || 'https://api.z-api.io';
+      zapiConfig.type         = cfg.zapiType         || 'zapi';
     }
   } catch(e) {}
+  // Atualiza banner de diagnóstico no topo da página
+  updateZapiBanner();
 }
 
 async function sendWhatsApp(phone, message) {
   // Limpa o telefone: apenas dígitos
   const num = phone.replace(/\D/g, '');
   if (!num || num.length < 8) throw new Error('Telefone inválido: ' + phone);
-  
-  // Se Z-API não configurado, abre WhatsApp Web
+
+  // Validação completa antes de tentar enviar
   if (!zapiConfig.instanceId || !zapiConfig.token) {
+    // Fallback: abre WhatsApp Web
     const encoded = encodeURIComponent(message);
     window.open(`https://wa.me/55${num}?text=${encoded}`, '_blank');
     return { simulated: true };
+  }
+
+  // Para Z-API, o Client-Token (Security Token) é obrigatório
+  if (zapiConfig.type === 'zapi' && !zapiConfig.clientToken) {
+    throw new Error(
+      'Z-API: Client-Token (Security Token) não configurado!\n' +
+      'Acesse Z-API → sua conta → Security Token e cole no campo "Client Token" nas configurações.'
+    );
   }
 
   // Adiciona código do Brasil se necessário
@@ -3130,16 +3244,32 @@ async function sendWhatsApp(phone, message) {
       headers: { 'Content-Type': 'application/json', 'apikey': zapiConfig.token },
       body: JSON.stringify({ number: fullNum, textMessage: { text: message } })
     });
-    if (!res.ok) throw new Error('Erro Evolution API: ' + res.status);
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`Evolution API falhou [${res.status}]: ${errBody || 'Verifique URL e apikey'}`);
+    }
     return res.json();
   } else {
-    // Z-API
-    const res = await fetch(`${zapiConfig.url}/instances/${zapiConfig.instanceId}/token/${zapiConfig.token}/send-text`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: fullNum, message })
-    });
-    if (!res.ok) throw new Error('Erro Z-API: ' + res.status);
+    // Z-API — requer Client-Token no header
+    const res = await fetch(
+      `${zapiConfig.url}/instances/${zapiConfig.instanceId}/token/${zapiConfig.token}/send-text`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Client-Token': zapiConfig.clientToken,
+        },
+        body: JSON.stringify({ phone: fullNum, message })
+      }
+    );
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      let hint = '';
+      if (res.status === 401 || res.status === 403) hint = ' — Client-Token inválido ou expirado.';
+      else if (res.status === 404) hint = ' — Instance ID não encontrado.';
+      else if (res.status === 500) hint = ' — Verifique se o WhatsApp está conectado na Z-API.';
+      throw new Error(`Z-API falhou [${res.status}]${hint} ${errBody}`);
+    }
     return res.json();
   }
 }
@@ -3303,7 +3433,12 @@ Qualquer dúvida, chame! 😊`
           <textarea class="form-input" id="sendMsgText" style="height:120px">${escHtml(msg)}</textarea>
         </div>
         <div style="font-size:12px;color:var(--gray-mid)">📱 Será enviado para: ${escHtml(client.telefone)}</div>
-        ${!zapiConfig.instanceId ? '<div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:8px;font-size:12px;color:#92400e">⚠️ Z-API não configurada. Será aberto o WhatsApp Web.</div>' : ''}
+        ${!zapiConfig.instanceId || !zapiConfig.token
+          ? '<div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:8px;font-size:12px;color:#92400e">⚠️ Z-API não configurada (Instance ID ou Token ausentes). Será aberto o WhatsApp Web.</div>'
+          : (zapiConfig.type === 'zapi' && !zapiConfig.clientToken
+            ? '<div style="margin-top:8px;padding:8px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;font-size:12px;color:#dc2626">❌ <strong>Client Token não configurado!</strong> O envio irá falhar com erro 401. Configure o Security Token da sua conta Z-API em <strong>Configurações → WhatsApp</strong>.</div>'
+            : '')
+        }
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="document.getElementById('sendMsgPreviewModal').remove()">Cancelar</button>
@@ -3343,11 +3478,21 @@ async function confirmSendMessage(clientId) {
   const client = window._sendMsgClient;
   const msg = document.getElementById('sendMsgText')?.value;
   if (!msg?.trim()) { showToast('Mensagem vazia', 'error'); return; }
+
+  // Remove erro anterior se existir
+  const prevErr = document.getElementById('sendMsgError');
+  if (prevErr) prevErr.remove();
+
   showLoading('Enviando mensagem...');
   try {
-    await sendWhatsApp(client.telefone, msg);
+    const result = await sendWhatsApp(client.telefone, msg);
+    hideLoading();
     document.getElementById('sendMsgPreviewModal')?.remove();
-    showToast('✅ Mensagem enviada!');
+    if (result?.simulated) {
+      showToast('WhatsApp Web aberto (Z-API não configurada)', 'warn');
+    } else {
+      showToast('✅ Mensagem enviada com sucesso!');
+    }
     // Cria conversa para rastrear
     await safeBlCreate('Conversas', {
       companyId: currentCompanyId, clienteId: clientId,
@@ -3356,8 +3501,31 @@ async function confirmSendMessage(clientId) {
       prioridade: 'Normal', ultimaMensagem: msg.substring(0,80),
       dataUltimaMensagem: new Date().toISOString()
     });
-  } catch(e) { showToast('Erro: ' + e.message, 'error'); }
-  finally { hideLoading(); }
+  } catch(e) {
+    hideLoading();
+    // Mostra erro detalhado dentro do modal (não some rapidamente)
+    const footer = document.querySelector('#sendMsgPreviewModal .modal-footer');
+    if (footer) {
+      const prevErr = document.getElementById('sendMsgError');
+      if (prevErr) prevErr.remove();
+      const errDiv = document.createElement('div');
+      errDiv.id = 'sendMsgError';
+
+      // Dica extra baseada no tipo de erro
+      let hint = '';
+      const em = e.message || '';
+      if (em.includes('401') || em.includes('403')) hint = '<br>🔑 <strong>Solução:</strong> Client Token inválido. Vá em Configurações → WhatsApp e atualize o Security Token da sua conta Z-API.';
+      else if (em.includes('404')) hint = '<br>🔍 <strong>Solução:</strong> Instance ID não encontrado. Confira o ID da sua instância na Z-API.';
+      else if (em.includes('500')) hint = '<br>📱 <strong>Solução:</strong> WhatsApp provavelmente desconectado. Vá em Configurações → WhatsApp → Ver QR Code e reconecte.';
+      else if (em.includes('Client-Token') || em.includes('clientToken')) hint = '<br>🔑 <strong>Solução:</strong> Acesse Configurações → WhatsApp → Configurar e informe o Security Token da conta Z-API.';
+      else if (em.includes('Failed to fetch') || em.includes('NetworkError')) hint = '<br>🌐 <strong>Solução:</strong> Erro de rede — verifique se a URL da Z-API está correta e se há conexão com a internet.';
+
+      errDiv.style.cssText = 'width:100%;padding:12px 14px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;font-size:12px;color:#dc2626;margin-bottom:8px;line-height:1.6;white-space:pre-wrap';
+      errDiv.innerHTML = `<strong>❌ Falha ao enviar:</strong><br>${escHtml(em)}${hint}<br><br><a href="javascript:openZapiConfigModal()" style="color:#1d4ed8;text-decoration:underline">🔧 Abrir configurações do WhatsApp</a>`;
+      footer.insertAdjacentElement('beforebegin', errDiv);
+    }
+    showToast('❌ Erro ao enviar — veja detalhes no modal', 'error');
+  }
 }
 
 // Painel de configuração da Z-API (dentro das Configurações)
@@ -3368,36 +3536,49 @@ function openZapiConfigModal() {
   modal.id = 'zapiConfigModal';
   modal.className = 'modal-overlay open';
   modal.innerHTML = `
-    <div class="modal" style="max-width:500px">
+    <div class="modal" style="max-width:520px">
       <div class="modal-header">
         <div class="modal-title">⚙️ Configurar WhatsApp (Z-API / Evolution)</div>
         <button class="modal-close" onclick="document.getElementById('zapiConfigModal').remove()">✕</button>
       </div>
       <div class="modal-body">
         <div style="padding:10px;background:#eff6ff;border-radius:8px;font-size:12px;color:#1e40af;margin-bottom:14px">
-          <strong>Como configurar:</strong><br>
+          <strong>Como configurar a Z-API:</strong><br>
           1. Acesse <a href="https://z-api.io" target="_blank" style="color:var(--blue)">z-api.io</a> e crie uma instância<br>
           2. Conecte seu WhatsApp escaneando o QR Code<br>
-          3. Cole o Instance ID e Token abaixo<br>
-          Ou use sua Evolution API self-hosted.
+          3. Cole o <strong>Instance ID</strong> e <strong>Token</strong> da instância abaixo<br>
+          4. Cole o <strong>Client Token</strong> (Security Token) da sua conta Z-API<br>
+          &nbsp;&nbsp;&nbsp;&rarr; Z-API → sua conta → <em>Security Token</em>
         </div>
+        <div id="zapiValidationAlert" style="display:none;padding:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;font-size:12px;color:#dc2626;margin-bottom:12px"></div>
         <div class="form-group">
           <label class="form-label">Tipo de API</label>
-          <select class="form-select" id="zapiType">
+          <select class="form-select" id="zapiType" onchange="toggleClientTokenField()">
             <option value="zapi">Z-API</option>
             <option value="evolution">Evolution API</option>
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Instance ID</label>
+          <label class="form-label">Instance ID <span style="color:var(--red)">*</span></label>
           <input class="form-input" id="zapiInstanceId" placeholder="Ex: 3ABC123DEF" value="${escHtml(zapiConfig.instanceId)}">
         </div>
         <div class="form-group">
-          <label class="form-label">Token</label>
-          <input class="form-input" id="zapiToken" placeholder="Seu token da Z-API" value="${escHtml(zapiConfig.token)}">
+          <label class="form-label">Token da Instância <span style="color:var(--red)">*</span></label>
+          <input class="form-input" id="zapiToken" placeholder="Token da instância Z-API" value="${escHtml(zapiConfig.token)}">
+        </div>
+        <div class="form-group" id="clientTokenGroup">
+          <label class="form-label">
+            Client Token (Security Token da conta) <span style="color:var(--red)">*</span>
+            <span style="font-size:11px;color:var(--gray-mid);font-weight:400"> — obrigatório para Z-API</span>
+          </label>
+          <input class="form-input" id="zapiClientToken" placeholder="Security Token da sua conta Z-API" value="${escHtml(zapiConfig.clientToken || '')}">
+          <div style="font-size:11px;color:var(--gray-dark);margin-top:4px">
+            ⚠️ Sem este token, o envio de mensagens retorna erro 401/403.<br>
+            Encontre em: Z-API → sua conta → <strong>Security Token</strong>
+          </div>
         </div>
         <div class="form-group">
-          <label class="form-label">URL da API <span style="color:var(--gray-mid)">(só mude se usar Evolution)</span></label>
+          <label class="form-label">URL da API <span style="color:var(--gray-mid);font-size:11px;font-weight:400">(só altere para Evolution self-hosted)</span></label>
           <input class="form-input" id="zapiUrl" placeholder="https://api.z-api.io" value="${escHtml(zapiConfig.url || 'https://api.z-api.io')}">
         </div>
         <button class="btn btn-secondary btn-sm" onclick="testZapiConnection()">🔍 Testar Conexão</button>
@@ -3410,54 +3591,103 @@ function openZapiConfigModal() {
   document.body.appendChild(modal);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
   document.getElementById('zapiType').value = zapiConfig.type || 'zapi';
+  toggleClientTokenField();
+}
+
+function toggleClientTokenField() {
+  const type = document.getElementById('zapiType')?.value;
+  const group = document.getElementById('clientTokenGroup');
+  if (group) group.style.display = type === 'evolution' ? 'none' : 'block';
 }
 
 async function testZapiConnection() {
-  const instanceId = document.getElementById('zapiInstanceId')?.value.trim();
-  const token = document.getElementById('zapiToken')?.value.trim();
-  const url = document.getElementById('zapiUrl')?.value.trim() || 'https://api.z-api.io';
-  const type = document.getElementById('zapiType')?.value || 'zapi';
-  
-  if (!instanceId || !token) { showToast('Preencha Instance ID e Token', 'error'); return; }
+  const instanceId  = document.getElementById('zapiInstanceId')?.value.trim();
+  const token       = document.getElementById('zapiToken')?.value.trim();
+  const clientToken = document.getElementById('zapiClientToken')?.value.trim();
+  const url         = document.getElementById('zapiUrl')?.value.trim() || 'https://api.z-api.io';
+  const type        = document.getElementById('zapiType')?.value || 'zapi';
+  const alertEl     = document.getElementById('zapiValidationAlert');
+
+  if (!instanceId || !token) {
+    if (alertEl) { alertEl.style.display='block'; alertEl.innerHTML='<strong>Preencha Instance ID e Token antes de testar.</strong>'; }
+    return;
+  }
+  if (type === 'zapi' && !clientToken) {
+    if (alertEl) { alertEl.style.display='block'; alertEl.innerHTML='<strong>⚠️ Client Token não preenchido!</strong><br>Sem ele o envio real irá falhar mesmo que o teste de status passe.<br>Preencha o Client Token antes de salvar.'; }
+  } else {
+    if (alertEl) alertEl.style.display = 'none';
+  }
+
   showLoading('Testando conexão...');
   try {
     let res;
     if (type === 'evolution') {
       res = await fetch(`${url}/instance/fetchInstances`, { headers: { 'apikey': token } });
     } else {
-      res = await fetch(`${url}/instances/${instanceId}/token/${token}/status`);
+      res = await fetch(
+        `${url}/instances/${instanceId}/token/${token}/status`,
+        { headers: { 'Client-Token': clientToken } }
+      );
     }
     hideLoading();
-    if (res.ok) showToast('✅ Conexão OK!');
-    else showToast('❌ Conexão falhou: ' + res.status, 'error');
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const connected = type === 'evolution'
+        ? (Array.isArray(data) ? data.some(i => i.connectionStatus === 'open') : data?.instance?.state === 'open')
+        : (data?.connected === true || data?.status === 'Connected' || data?.smartphoneConnected === true);
+      if (connected) showToast('✅ Conexão OK! WhatsApp conectado.');
+      else showToast('⚠️ API respondeu, mas WhatsApp não está conectado. Escaneie o QR Code.', 'warn');
+    } else {
+      const errBody = await res.text().catch(() => '');
+      let hint = '';
+      if (res.status === 401 || res.status === 403) hint = ' — Client-Token inválido ou ausente.';
+      else if (res.status === 404) hint = ' — Instance ID não encontrado.';
+      showToast(`❌ Falha na conexão [${res.status}]${hint}`, 'error');
+    }
   } catch(e) {
     hideLoading();
-    showToast('❌ Erro: ' + e.message, 'error');
+    showToast('❌ Erro de rede: ' + e.message, 'error');
   }
 }
 
 async function saveZapiConfig() {
-  const instanceId = document.getElementById('zapiInstanceId')?.value.trim();
-  const token = document.getElementById('zapiToken')?.value.trim();
-  const url = document.getElementById('zapiUrl')?.value.trim() || 'https://api.z-api.io';
-  const type = document.getElementById('zapiType')?.value || 'zapi';
-  
+  const instanceId   = document.getElementById('zapiInstanceId')?.value.trim();
+  const token        = document.getElementById('zapiToken')?.value.trim();
+  const clientToken  = document.getElementById('zapiClientToken')?.value.trim();
+  const url          = document.getElementById('zapiUrl')?.value.trim() || 'https://api.z-api.io';
+  const type         = document.getElementById('zapiType')?.value || 'zapi';
+
+  // Validação antes de salvar
+  const alertEl = document.getElementById('zapiValidationAlert');
+  const errors = [];
+  if (!instanceId) errors.push('• Instance ID é obrigatório');
+  if (!token) errors.push('• Token da instância é obrigatório');
+  if (type === 'zapi' && !clientToken) errors.push('• Client Token (Security Token) é obrigatório para Z-API — sem ele o envio retornará erro 401');
+
+  if (errors.length && alertEl) {
+    alertEl.style.display = 'block';
+    alertEl.innerHTML = '<strong>⚠️ Corrija antes de salvar:</strong><br>' + errors.join('<br>');
+    return;
+  }
+  if (alertEl) alertEl.style.display = 'none';
+
   showLoading('Salvando...');
   try {
     const cfgs = await safeBlGetAll('ConfigChatbot', `companyId='${currentCompanyId}'`);
     const list = cfgs?.data || cfgs || [];
     const existing = list[0];
-    const update = { zapiInstanceId: instanceId, zapiToken: token, zapiUrl: url, zapiType: type };
+    const update = { zapiInstanceId: instanceId, zapiToken: token, zapiClientToken: clientToken, zapiUrl: url, zapiType: type };
     if (existing?.objectId) {
       await blUpdate('ConfigChatbot', existing.objectId, update);
     } else {
       await safeBlCreate('ConfigChatbot', { companyId: currentCompanyId, ...update });
     }
-    zapiConfig = { instanceId, token, url, type };
+    zapiConfig = { instanceId, token, clientToken, url, type };
+    updateZapiBanner();
     document.getElementById('zapiConfigModal')?.remove();
-    showToast('✅ WhatsApp configurado!');
+    showToast('✅ WhatsApp configurado com sucesso!');
     await renderSettings();
-  } catch(e) { showToast(e.message, 'error'); }
+  } catch(e) { showToast('Erro ao salvar: ' + e.message, 'error'); }
   finally { hideLoading(); }
 }
 
