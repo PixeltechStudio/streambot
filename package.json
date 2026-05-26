@@ -1,0 +1,17 @@
+{
+  "name": "streambot-webhook",
+  "version": "1.1.0",
+  "description": "StreamBot CRM - Servidor Webhook para Chatbot Automático",
+  "main": "webhook-server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node webhook-server.js",
+    "dev": "node --watch webhook-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
